@@ -29,5 +29,7 @@ WORKDIR /app
 
 EXPOSE 8000
 
-ENTRYPOINT ["jarvis"]
-CMD ["serve", "--host", "0.0.0.0", "--port", "8000"]
+COPY deploy/docker/entrypoint.sh /usr/local/bin/openjarvis-entrypoint.sh
+RUN chmod +x /usr/local/bin/openjarvis-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/openjarvis-entrypoint.sh"]
