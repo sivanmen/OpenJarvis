@@ -9,6 +9,15 @@ CONFIG_PATH="${OPENJARVIS_CONFIG:-/data/config.toml}"
 CONFIG_DIR="$(dirname "$CONFIG_PATH")"
 mkdir -p "$CONFIG_DIR"
 
+# Bootstrap connector tokens from env (one-shot — once written, can clear env).
+CONN_DIR="${CONFIG_DIR}/connectors"
+if [ -n "${GOOGLE_OAUTH_BUNDLE_B64:-}" ] && [ ! -f "${CONN_DIR}/google.json" ]; then
+  echo "[entrypoint] Bootstrapping Google connector tokens from GOOGLE_OAUTH_BUNDLE_B64"
+  mkdir -p "$CONN_DIR"
+  printf '%s' "$GOOGLE_OAUTH_BUNDLE_B64" | base64 -d | tar xzf - -C "$CONN_DIR"
+  chmod 600 "$CONN_DIR"/*.json 2>/dev/null || true
+fi
+
 if [ ! -f "$CONFIG_PATH" ]; then
   echo "[entrypoint] Writing initial config to $CONFIG_PATH"
   cat > "$CONFIG_PATH" <<EOF
