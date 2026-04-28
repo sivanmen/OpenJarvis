@@ -141,4 +141,9 @@ try:
 except ImportError:
     pass
 
+try:
+    import openjarvis.tools.google_live  # noqa: F401
+except ImportError:
+    pass
+
 __all__ = ["BaseTool", "ToolExecutor", "ToolSpec"]
