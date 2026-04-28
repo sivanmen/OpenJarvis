@@ -117,6 +117,39 @@ def _api_get(url: str, *, params: Optional[Dict[str, Any]] = None) -> Dict[str, 
         return _do_request(tokens["access_token"])
 
 
+def _api_post(url: str, body: Any, *, content_type: str = "application/json") -> Dict[str, Any]:
+    """POST helper with auto-refresh on 401."""
+    tokens = _load_tokens()
+    if not tokens or not tokens.get("refresh_token"):
+        raise RuntimeError(
+            f"Google OAuth tokens not configured at {_DEFAULT_CREDS}."
+        )
+    if int(tokens.get("expires_at") or 0) < int(time.time()):
+        tokens = _refresh_access_token(tokens)
+
+    if content_type == "application/json":
+        data = json.dumps(body).encode()
+    else:
+        data = body if isinstance(body, bytes) else str(body).encode()
+
+    def _do_request(access_token: str) -> Dict[str, Any]:
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Authorization", f"Bearer {access_token}")
+        req.add_header("Content-Type", content_type)
+        req.add_header("Accept", "application/json")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+            return json.loads(raw) if raw else {}
+
+    try:
+        return _do_request(tokens["access_token"])
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401:
+            raise
+        tokens = _refresh_access_token(tokens)
+        return _do_request(tokens["access_token"])
+
+
 # ---------------------------------------------------------------------------
 # Calendar
 # ---------------------------------------------------------------------------
@@ -557,11 +590,246 @@ class TasksListTool(BaseTool):
             )
 
 
+# ---------------------------------------------------------------------------
+# Write tools — require expanded OAuth scopes (see deploy/oauth)
+# ---------------------------------------------------------------------------
+
+
+@ToolRegistry.register("calendar_create_event")
+class CalendarCreateEventTool(BaseTool):
+    """Create a new event on the user's primary Google Calendar."""
+
+    tool_id = "calendar_create_event"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="calendar_create_event",
+            description=(
+                "Create a new event on the user's primary Google Calendar. "
+                "Times must be ISO 8601 with timezone (e.g. "
+                "'2026-04-29T14:00:00+03:00'). When the user gives a relative "
+                "time, convert to absolute first. Requires title, start, end."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Event title."},
+                    "start": {
+                        "type": "string",
+                        "description": "ISO 8601 start datetime with timezone offset.",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "ISO 8601 end datetime with timezone offset.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional event description / notes.",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "Optional location (address or meeting URL).",
+                    },
+                    "attendees": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of attendee email addresses.",
+                    },
+                },
+                "required": ["title", "start", "end"],
+            },
+            category="productivity",
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        title = (params.get("title") or "").strip()
+        start = (params.get("start") or "").strip()
+        end = (params.get("end") or "").strip()
+        if not title or not start or not end:
+            return ToolResult(
+                tool_name=self.spec.name,
+                content="title, start, end are required.",
+                success=False,
+            )
+        body: Dict[str, Any] = {
+            "summary": title,
+            "start": {"dateTime": start},
+            "end": {"dateTime": end},
+        }
+        if params.get("description"):
+            body["description"] = params["description"]
+        if params.get("location"):
+            body["location"] = params["location"]
+        if params.get("attendees"):
+            body["attendees"] = [
+                {"email": e} for e in params["attendees"] if isinstance(e, str)
+            ]
+        try:
+            result = _api_post(
+                "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+                body,
+            )
+            link = result.get("htmlLink", "")
+            evt_id = result.get("id", "")
+            return ToolResult(
+                tool_name=self.spec.name,
+                content=f"Event created: {title}\n  When: {start} → {end}\n  ID: {evt_id}\n  Link: {link}",
+                success=True,
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name=self.spec.name,
+                content=f"calendar_create_event error: {exc}",
+                success=False,
+            )
+
+
+@ToolRegistry.register("gmail_send")
+class GmailSendTool(BaseTool):
+    """Send an email from the user's Gmail account."""
+
+    tool_id = "gmail_send"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="gmail_send",
+            description=(
+                "Send an email from the user's Gmail account. Plain text body. "
+                "Always confirm with the user before sending if you composed "
+                "the body yourself, unless they explicitly told you to send."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "Recipient email."},
+                    "subject": {"type": "string", "description": "Subject line."},
+                    "body": {"type": "string", "description": "Plain-text body."},
+                    "cc": {"type": "string", "description": "Optional CC."},
+                    "bcc": {"type": "string", "description": "Optional BCC."},
+                },
+                "required": ["to", "subject", "body"],
+            },
+            category="communication",
+            requires_confirmation=True,
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        import base64
+        from email.mime.text import MIMEText
+
+        to = (params.get("to") or "").strip()
+        subject = (params.get("subject") or "").strip()
+        body = params.get("body") or ""
+        if not to or not subject:
+            return ToolResult(
+                tool_name=self.spec.name,
+                content="to and subject are required.",
+                success=False,
+            )
+        try:
+            msg = MIMEText(body, _charset="utf-8")
+            msg["To"] = to
+            msg["Subject"] = subject
+            if params.get("cc"):
+                msg["Cc"] = params["cc"]
+            if params.get("bcc"):
+                msg["Bcc"] = params["bcc"]
+            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode().rstrip("=")
+            result = _api_post(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+                {"raw": raw},
+            )
+            mid = result.get("id", "")
+            return ToolResult(
+                tool_name=self.spec.name,
+                content=f"Email sent to {to}\n  Subject: {subject}\n  Gmail ID: {mid}",
+                success=True,
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name=self.spec.name,
+                content=f"gmail_send error: {exc}",
+                success=False,
+            )
+
+
+@ToolRegistry.register("tasks_create")
+class TasksCreateTool(BaseTool):
+    """Create a new Google Task in the user's default task list."""
+
+    tool_id = "tasks_create"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="tasks_create",
+            description=(
+                "Create a new Google Tasks todo. Adds to the user's default "
+                "task list unless 'list_id' is supplied. 'due' must be RFC "
+                "3339 UTC ('2026-04-29T00:00:00Z') if provided."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Task title."},
+                    "notes": {"type": "string", "description": "Optional details."},
+                    "due": {
+                        "type": "string",
+                        "description": "Optional RFC 3339 UTC due date.",
+                    },
+                    "list_id": {
+                        "type": "string",
+                        "description": "Optional task list ID (default: @default).",
+                    },
+                },
+                "required": ["title"],
+            },
+            category="productivity",
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        title = (params.get("title") or "").strip()
+        if not title:
+            return ToolResult(
+                tool_name=self.spec.name,
+                content="title is required.",
+                success=False,
+            )
+        list_id = params.get("list_id") or "@default"
+        body: Dict[str, Any] = {"title": title}
+        if params.get("notes"):
+            body["notes"] = params["notes"]
+        if params.get("due"):
+            body["due"] = params["due"]
+        try:
+            result = _api_post(
+                f"https://tasks.googleapis.com/tasks/v1/lists/{list_id}/tasks",
+                body,
+            )
+            tid = result.get("id", "")
+            return ToolResult(
+                tool_name=self.spec.name,
+                content=f"Task created: {title}\n  ID: {tid}",
+                success=True,
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name=self.spec.name,
+                content=f"tasks_create error: {exc}",
+                success=False,
+            )
+
+
 __all__ = [
     "CalendarTodayTool",
     "CalendarUpcomingTool",
+    "CalendarCreateEventTool",
     "GmailSearchTool",
     "GmailUnreadTool",
+    "GmailSendTool",
     "DriveSearchTool",
     "TasksListTool",
+    "TasksCreateTool",
 ]
