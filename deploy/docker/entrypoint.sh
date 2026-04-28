@@ -30,7 +30,7 @@ fi
 
 # Bump CONFIG_VERSION whenever the schema below changes — boots will then
 # regenerate the file (preserving the volume but refreshing managed sections).
-CONFIG_VERSION="5"
+CONFIG_VERSION="6"
 EXISTING_VERSION=""
 if [ -f "$CONFIG_PATH" ]; then
   EXISTING_VERSION=$(grep -E '^# config-version =' "$CONFIG_PATH" | sed -E 's/^# config-version = "?([^"]+)"?/\1/' || true)
@@ -52,7 +52,7 @@ default = "cloud"
 [agent]
 default_agent = "${JARVIS_DEFAULT_AGENT:-native_react}"
 max_turns = 8
-tools = "${JARVIS_AGENT_TOOLS:-think,calculator,web_search,calendar_today,calendar_upcoming,calendar_create_event,gmail_search,gmail_unread,gmail_send,drive_search,tasks_list,tasks_create}"
+tools = "${JARVIS_AGENT_TOOLS:-think,calculator,web_search,calendar_today,calendar_upcoming,calendar_create_event,gmail_search,gmail_unread,gmail_send,drive_search,tasks_list,tasks_create,apple_calendar_today,apple_calendar_create_event,apple_reminders_list,apple_reminders_create}"
 
 [channel]
 enabled = ${JARVIS_CHANNEL_ENABLED:-true}
