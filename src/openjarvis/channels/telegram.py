@@ -162,7 +162,7 @@ class TelegramChannel(BaseChannel):
 
             app = ApplicationBuilder().token(self._token).build()
 
-            def _handle_msg(update, context):
+            async def _handle_msg(update, context):
                 msg = update.message
                 if msg is None:
                     return

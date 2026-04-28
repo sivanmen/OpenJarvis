@@ -20,7 +20,7 @@ fi
 
 # Bump CONFIG_VERSION whenever the schema below changes — boots will then
 # regenerate the file (preserving the volume but refreshing managed sections).
-CONFIG_VERSION="3"
+CONFIG_VERSION="4"
 EXISTING_VERSION=""
 if [ -f "$CONFIG_PATH" ]; then
   EXISTING_VERSION=$(grep -E '^# config-version =' "$CONFIG_PATH" | sed -E 's/^# config-version = "?([^"]+)"?/\1/' || true)
@@ -34,6 +34,7 @@ if [ "$EXISTING_VERSION" != "$CONFIG_VERSION" ]; then
 
 [server]
 host = "0.0.0.0"
+agent = "${JARVIS_DEFAULT_AGENT:-native_react}"
 
 [engine]
 default = "cloud"
