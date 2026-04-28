@@ -9,13 +9,23 @@ CONFIG_PATH="${OPENJARVIS_CONFIG:-/data/config.toml}"
 CONFIG_DIR="$(dirname "$CONFIG_PATH")"
 mkdir -p "$CONFIG_DIR"
 
-# Bootstrap connector tokens from env (one-shot — once written, can clear env).
+# Bootstrap connector tokens from env. Re-extracts whenever the bundle hash
+# changes so re-OAuth flows (e.g. expanded scopes) propagate without manual
+# cleanup. The hash marker lives next to the tokens on the volume.
 CONN_DIR="${CONFIG_DIR}/connectors"
-if [ -n "${GOOGLE_OAUTH_BUNDLE_B64:-}" ] && [ ! -f "${CONN_DIR}/google.json" ]; then
-  echo "[entrypoint] Bootstrapping Google connector tokens from GOOGLE_OAUTH_BUNDLE_B64"
+if [ -n "${GOOGLE_OAUTH_BUNDLE_B64:-}" ]; then
   mkdir -p "$CONN_DIR"
-  printf '%s' "$GOOGLE_OAUTH_BUNDLE_B64" | base64 -d | tar xzf - -C "$CONN_DIR"
-  chmod 600 "$CONN_DIR"/*.json 2>/dev/null || true
+  NEW_HASH=$(printf '%s' "$GOOGLE_OAUTH_BUNDLE_B64" | sha256sum | cut -c1-16)
+  OLD_HASH=""
+  [ -f "${CONN_DIR}/.bundle_hash" ] && OLD_HASH=$(cat "${CONN_DIR}/.bundle_hash")
+  if [ "$NEW_HASH" != "$OLD_HASH" ]; then
+    echo "[entrypoint] Extracting Google bundle (hash $NEW_HASH, was '$OLD_HASH')"
+    printf '%s' "$GOOGLE_OAUTH_BUNDLE_B64" | base64 -d | tar xzf - -C "$CONN_DIR"
+    chmod 600 "$CONN_DIR"/*.json 2>/dev/null || true
+    printf '%s' "$NEW_HASH" > "${CONN_DIR}/.bundle_hash"
+  else
+    echo "[entrypoint] Google bundle unchanged (hash $NEW_HASH)"
+  fi
 fi
 
 # Bump CONFIG_VERSION whenever the schema below changes — boots will then
